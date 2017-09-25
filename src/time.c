@@ -26,6 +26,9 @@
 
 #include <sys/wait.h>
 #include <sys/resource.h>
+#include <sys/capability.h>
+#include <sys/types.h>
+#include <sys/prctl.h>
 #include <stdio.h>
 #include <signal.h>
 #include <getopt.h>
@@ -36,6 +39,12 @@
 #include <string.h>
 #include <limits.h>
 #include <unistd.h>
+#include <grp.h> 
+#include <pwd.h>
+#define _GNU_SOURCE
+#include <sched.h>
+#include <sys/mount.h>
+
 #include "progname.h"
 #include "error.h"
 #define Version VERSION
@@ -63,10 +72,6 @@ enum
    add this offset to time's exit code: this is what sh
    returns for signaled processes. */
 #define SIGNALLED_OFFSET 128
-
-
-
-
 
 #define AUTHORS \
     "David Keppel",                 \
@@ -198,12 +203,30 @@ static const char *output_format;
 /* Quiet mode: do not print info about abnormal terminations */
 static bool quiet;
 
+/* Cap drops: select caps to drop from spawned process */
+static int *cap_drops = NULL;
+static int cap_drops_length = 0;
+
+/* set user */
+static bool set_user = false;
+static uid_t set_uid;
+static gid_t set_gid;
+static gid_t *set_groups;
+static int set_groups_length = 0;
+
+/* pid namespace */
+static bool pid_namesapce = false;
+
 static struct option longopts[] =
 {
   {"append", no_argument, NULL, 'a'},
   {"format", required_argument, NULL, 'f'},
   {"help", no_argument, NULL, 'h'},
   {"output-file", required_argument, NULL, 'o'},
+  {"cap-drop", required_argument, NULL, 'c'},
+  {"user", required_argument, NULL, 'u'},
+  {"pid-namespace", no_argument, NULL, 'n'},
+  {"pid-file", required_argument, NULL, 'i'},
   {"portability", no_argument, NULL, 'p'},
   {"quiet", no_argument, NULL, 'q'},
   {"verbose", no_argument, NULL, 'v'},
@@ -250,6 +273,12 @@ Usage: %s [-apvV] [-f format] [-o file] [--append] [--verbose]\n\
 "), stdout);
   fputs (_("\
   -o, --output=FILE         write to FILE instead of STDOUT\n"), stdout);
+  fputs (_("\
+  -c, --cap-drop=cap1[,cap2...]    drop these capabilities\n"), stdout);
+  fputs (_("\
+  -n, --pid-namespace       enable pid namesapce\n"), stdout);
+  fputs (_("\
+  -u, --user=USER_NAME      execute with specific user's uid and pid\n"), stdout);
   fputs (_("\
   -p, --portability         print POSIX standard 1003.2 conformant string:\n\
                               real %%e\n\
@@ -642,14 +671,24 @@ getargs (argc, argv)
   outfp = stderr;
   append = false;
   output_format = default_format;
-
+  /* for parse caps */
+  char *newstr;
+  const char * const delim = ",";
+  char *sepstr;
+  char *substr;
+  int count = 0;
+  int *new_cap_drops;
+  cap_value_t cap;
+  /* for user option */
+  struct passwd *pwd;
+  
   /* Set the format string from the environment.  Do this before checking
      the args so that we won't clobber a user-specified format.  */
   format = getenv ("TIME");
   if (format)
     output_format = format;
 
-  while ((optc = getopt_long (argc, argv, "+af:o:pqvV", longopts, (int *) 0))
+  while ((optc = getopt_long (argc, argv, "+af:o:pqvc:u:nV", longopts, (int *) 0))
 	 != EOF)
     {
       switch (optc)
@@ -674,6 +713,64 @@ getargs (argc, argv)
 	case 'v':
 	  verbose = true;
 	  break;
+	case 'c':
+	  newstr = strdup(optarg);
+	  sepstr = newstr;
+	  
+    while (true) {
+        substr = strsep(&sepstr, delim);
+        if (!substr) {
+          break;
+        }
+        
+        new_cap_drops = malloc((cap_drops_length + 1) * sizeof *cap_drops);
+        if (cap_drops_length != 0) {
+          memcpy(new_cap_drops, cap_drops, cap_drops_length * sizeof *cap_drops);
+        }
+        free(cap_drops);
+        cap_drops = new_cap_drops;
+        cap_drops_length++;
+        
+        if (cap_from_name(substr, &cap)) {
+          fprintf(stderr, "unknown capability %s \n", substr);
+          exit(EXIT_CANCELED);
+        }
+        
+	      cap_drops[cap_drops_length - 1] = cap;
+	      
+        // printf("#%d sub string: %s (@%p), cap id: %u\n", count++, substr, substr, cap);
+    }
+    
+    // for (int i = 0; i < cap_drops_length; i++) {
+    //   printf("%d, ", cap_drops[i]);
+    // }
+    // printf("\n");
+    
+	  free(newstr);
+    break;
+  case 'u':
+    set_user = true;
+    pwd = getpwnam(optarg);
+    if (pwd == NULL) {
+      fprintf(stderr, "unknown user %s \n", optarg);
+      exit(EXIT_CANCELED);
+    }
+    set_uid = pwd->pw_uid;
+    set_gid = pwd->pw_gid;
+    
+    set_groups = malloc(0);
+    getgrouplist(optarg, set_gid, set_groups, &set_groups_length);
+    free(set_groups);
+    set_groups = malloc(set_groups_length * sizeof *set_groups);
+    
+    if(getgrouplist(optarg, set_gid, set_groups, &set_groups_length) == -1) {
+      fprintf(stderr, "fail to get supplement groups\n");
+      exit(EXIT_CANCELED);
+    }
+    break;
+  case 'n':
+    pid_namesapce = true;
+    break;
 	case 'V':
       version_etc (stdout, PROGRAM_NAME, PACKAGE_NAME, Version, AUTHORS,
                    (char *) NULL);
@@ -710,6 +807,133 @@ getargs (argc, argv)
 
   return (const char **) &argv[optind];
 }
+
+static int 
+modify_cap(capability, setting)
+     int capability;
+     int setting;
+{
+    cap_t caps;
+    cap_value_t capList[1];
+    
+    /* Retrieve caller's current capabilities */
+    
+    // printf("get caps\n");
+    
+    caps = cap_get_proc();
+    if (caps == NULL) {
+        perror("cannot get cap");
+        return -1;
+    }
+    /* Change setting of 'capability' in the effective set of 'caps'. The
+    third argument, 1, is the number of items in the array 'capList'. */
+    
+    // printf("set caps\n");
+    
+    capList[0] = capability;
+    if (cap_set_flag(caps, CAP_INHERITABLE, 1, capList, setting) ||
+        cap_set_flag(caps, CAP_PERMITTED, 1, capList, setting) ||
+        cap_set_flag(caps, CAP_EFFECTIVE, 1, capList, setting)
+    ) {
+        cap_free(caps);
+        perror("cannot set cap");
+        return -1;
+    }
+    
+    if (prctl(PR_CAPBSET_DROP, capability, 0, 0, 0)) {
+        perror("cannot drop cap");
+        return -1;
+    }
+    
+    /* Push modified capability sets back to kernel, to change
+    caller's capabilities */
+    
+    // printf("set caps proc\n");
+    
+    if (cap_set_proc(caps) == -1) {
+        cap_free(caps);
+        perror("cannot set cap to process");
+        return -1;
+    }
+    
+    /* Free the structure that was allocated by libcap */
+    
+    // printf("free caps\n");
+    
+    if (cap_free(caps) == -1) {
+        perror("cannot free cap");
+        return -1;
+    }
+    
+    /* check caller's current capabilities */
+    
+    // printf("get caps again\n");
+    
+    caps = cap_get_proc();
+    if (caps == NULL) {
+        perror("cannot get cap");
+        return -1;
+    }
+    
+    // printf("print caps\n");
+    
+    cap_flag_value_t cap_flags_value;
+    int failed = 0;
+    
+    char *cap_name = cap_to_name(capability);
+    printf("%-15s", cap_name);
+    cap_free(cap_name);
+    
+    cap_get_flag(caps, capability, CAP_EFFECTIVE, &cap_flags_value);
+    printf(" EFFECTIVE %-4s ", (cap_flags_value == CAP_SET) ? "OK" : "NOK");
+    if (cap_flags_value != setting) failed = 1;
+
+    cap_get_flag(caps, capability, CAP_PERMITTED, &cap_flags_value);
+    printf(" PERMITTED %-4s ", (cap_flags_value == CAP_SET) ? "OK" : "NOK");
+    if (cap_flags_value != setting) failed = 1;
+
+    cap_get_flag(caps, capability, CAP_INHERITABLE, &cap_flags_value);
+    printf(" INHERITABLE %-4s ", (cap_flags_value == CAP_SET) ? "OK" : "NOK");
+    if (cap_flags_value != setting) failed = 1;
+    
+    int in_bounding = prctl(PR_CAPBSET_READ, capability, 0, 0, 0);
+    printf(" Bounding_Set %-4s ", in_bounding ? "OK" : "NOK");
+    if ((setting != CAP_SET) && in_bounding) failed = 1;
+
+    printf("\n");
+    
+    if (failed) {
+        perror("set cap failed");
+        return -1;
+    }
+    
+    /* Free the structure that was allocated by libcap */
+    
+    // printf("free caps again\n");
+    
+    if (cap_free(caps) == -1) {
+        perror("cannot free cap");
+        return -1;
+    }
+    
+    return 0;
+}
+
+static int
+modify_caps(capabilities, count, setting)
+  int *capabilities;
+  int count;
+  int setting;
+{
+  for (int i = 0; i < count; i++) {
+    if (modify_cap(capabilities[i], setting)) {
+      return -1;
+    }
+  }
+  
+  return 0;
+}
+
 
 /* Run command CMD and return statistics on it.
    Put the statistics in *RESP.  */
@@ -724,12 +948,51 @@ run_command (cmd, resp)
   int saved_errno;
 
   resuse_start (resp);
-
+  
+  if (pid_namesapce) {
+    unshare(CLONE_NEWUTS | CLONE_NEWIPC | CLONE_NEWPID | CLONE_NEWNS);
+  }
+  
   pid = fork ();		/* Run CMD as child process.  */
   if (pid < 0)
     error (EXIT_CANCELED, errno, "cannot fork");
   else if (pid == 0)
-    {				/* If child.  */
+    {
+      if (pid_namesapce) {
+        if (mount("none", "/proc", NULL, MS_PRIVATE|MS_REC, NULL)) {
+          perror("Cannot umount proc! errno");
+          _exit (EXIT_CANNOT_INVOKE);
+        }
+        
+        if (mount("proc", "/proc", "proc", MS_NOSUID|MS_NOEXEC|MS_NODEV, NULL)) {
+          perror("Cannot mount proc! errno=");
+          _exit (EXIT_CANNOT_INVOKE);
+        }
+      }
+      
+      if (
+          // modify_cap (CAP_SYS_ADMIN, CAP_CLEAR) ||
+          // modify_cap (CAP_CHOWN, CAP_CLEAR) ||
+          // modify_cap (CAP_SETPCAP, CAP_CLEAR)
+          // modify_caps((int[]){CAP_SYS_ADMIN, CAP_CHOWN, CAP_SETPCAP}, 3, CAP_CLEAR)
+          modify_caps(cap_drops, cap_drops_length, CAP_CLEAR)
+      ) {
+          perror("cannot modify cap");
+          _exit (EXIT_CANNOT_INVOKE);
+      }
+      
+      if (set_user) {
+        if (
+          setgroups(set_groups_length, set_groups) == -1 ||
+          setgid(set_gid) ||
+          setuid(set_uid)
+        ) {
+          perror("cannot set user");
+          _exit (EXIT_CANNOT_INVOKE);
+        }
+      }
+      
+      /* If child.  */
       /* Don't cast execvp arguments; that causes errors on some systems,
 	 versus merely warnings if the cast is left off.  */
       execvp (cmd[0], cmd);

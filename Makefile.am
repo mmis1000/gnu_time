@@ -5,6 +5,8 @@ AM_CPPFLAGS = \
 	-Ilib -I$(top_srcdir)/lib -I$(top_builddir)/lib \
 	-Isrc -I$(top_srcdir)/src
 
+AM_LDFLAGS = -lcap
+
 ##
 ## These must be set before including gnulib
 ##
