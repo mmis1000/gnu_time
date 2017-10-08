@@ -32,7 +32,6 @@
 /tests/time-aux
 /tests/.deps
 
-/build-aux
 /autom4te.cache
 /time-*.tar.gz
 /time-*.tar.xz
