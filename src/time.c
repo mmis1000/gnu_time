@@ -41,7 +41,6 @@
 #include <unistd.h>
 #include <grp.h> 
 #include <pwd.h>
-#define _GNU_SOURCE
 #include <sched.h>
 #include <sys/mount.h>
 
@@ -206,6 +205,9 @@ static bool quiet;
 /* Cap drops: select caps to drop from spawned process */
 static int *cap_drops = NULL;
 static int cap_drops_length = 0;
+static bool cap_drop_setpcap = false;
+static bool cap_drop_setuid = false;
+static bool cap_drop_setgid = false;
 
 /* set user */
 static bool set_user = false;
@@ -216,6 +218,9 @@ static int set_groups_length = 0;
 
 /* pid namespace */
 static bool pid_namesapce = false;
+
+/* pid file */
+static FILE *pidfp = NULL;
 
 static struct option longopts[] =
 {
@@ -676,7 +681,6 @@ getargs (argc, argv)
   const char * const delim = ",";
   char *sepstr;
   char *substr;
-  int count = 0;
   int *new_cap_drops;
   cap_value_t cap;
   /* for user option */
@@ -688,7 +692,7 @@ getargs (argc, argv)
   if (format)
     output_format = format;
 
-  while ((optc = getopt_long (argc, argv, "+af:o:pqvc:u:nV", longopts, (int *) 0))
+  while ((optc = getopt_long (argc, argv, "+af:o:pqvc:u:i:nV", longopts, (int *) 0))
 	 != EOF)
     {
       switch (optc)
@@ -723,6 +727,26 @@ getargs (argc, argv)
           break;
         }
         
+        if (cap_from_name(substr, &cap)) {
+          fprintf(stderr, "unknown capability %s \n", substr);
+          exit(EXIT_CANCELED);
+        }
+        
+        if (cap == CAP_SETPCAP) {
+          cap_drop_setpcap = true;
+          continue;
+        }
+        
+        if (cap == CAP_SETUID) {
+          cap_drop_setuid = true;
+          continue;
+        }
+        
+        if (cap == CAP_SETGID) {
+          cap_drop_setgid = true;
+          continue;
+        }
+        
         new_cap_drops = malloc((cap_drops_length + 1) * sizeof *cap_drops);
         if (cap_drops_length != 0) {
           memcpy(new_cap_drops, cap_drops, cap_drops_length * sizeof *cap_drops);
@@ -730,11 +754,6 @@ getargs (argc, argv)
         free(cap_drops);
         cap_drops = new_cap_drops;
         cap_drops_length++;
-        
-        if (cap_from_name(substr, &cap)) {
-          fprintf(stderr, "unknown capability %s \n", substr);
-          exit(EXIT_CANCELED);
-        }
         
 	      cap_drops[cap_drops_length - 1] = cap;
 	      
@@ -770,6 +789,12 @@ getargs (argc, argv)
     break;
   case 'n':
     pid_namesapce = true;
+    break;
+  case 'i':
+    pidfp = fopen (optarg, "w");
+    if (pidfp == NULL) {
+      error (EXIT_CANCELED, errno, "fail to create pid file: %s", outfile);
+    }
     break;
 	case 'V':
       version_etc (stdout, PROGRAM_NAME, PACKAGE_NAME, Version, AUTHORS,
@@ -809,9 +834,10 @@ getargs (argc, argv)
 }
 
 static int 
-modify_cap(capability, setting)
+modify_cap(capability, flag, setting)
      int capability;
-     int setting;
+     cap_flag_t flag;
+     cap_flag_value_t setting;
 {
     cap_t caps;
     cap_value_t capList[1];
@@ -831,20 +857,18 @@ modify_cap(capability, setting)
     // printf("set caps\n");
     
     capList[0] = capability;
-    if (cap_set_flag(caps, CAP_INHERITABLE, 1, capList, setting) ||
-        cap_set_flag(caps, CAP_PERMITTED, 1, capList, setting) ||
-        cap_set_flag(caps, CAP_EFFECTIVE, 1, capList, setting)
+    if (cap_set_flag(caps, flag, 1, capList, setting)
     ) {
         cap_free(caps);
         perror("cannot set cap");
         return -1;
     }
-    
+    /*
     if (prctl(PR_CAPBSET_DROP, capability, 0, 0, 0)) {
         perror("cannot drop cap");
         return -1;
     }
-    
+    */
     /* Push modified capability sets back to kernel, to change
     caller's capabilities */
     
@@ -884,6 +908,15 @@ modify_cap(capability, setting)
     printf("%-15s", cap_name);
     cap_free(cap_name);
     
+    cap_get_flag(caps, capability, flag, &cap_flags_value);
+    if (flag == CAP_EFFECTIVE)
+      printf(" EFFECTIVE %-4s\n", (cap_flags_value == CAP_SET) ? "OK" : "NOK");
+    if (flag == CAP_PERMITTED)
+      printf(" PERMITTED %-4s\n", (cap_flags_value == CAP_SET) ? "OK" : "NOK");
+    if (flag == CAP_INHERITABLE)
+      printf(" INHERITABLE %-4s\n", (cap_flags_value == CAP_SET) ? "OK" : "NOK");
+    if (cap_flags_value != setting) failed = 1;
+    /*
     cap_get_flag(caps, capability, CAP_EFFECTIVE, &cap_flags_value);
     printf(" EFFECTIVE %-4s ", (cap_flags_value == CAP_SET) ? "OK" : "NOK");
     if (cap_flags_value != setting) failed = 1;
@@ -898,9 +931,7 @@ modify_cap(capability, setting)
     
     int in_bounding = prctl(PR_CAPBSET_READ, capability, 0, 0, 0);
     printf(" Bounding_Set %-4s ", in_bounding ? "OK" : "NOK");
-    if ((setting != CAP_SET) && in_bounding) failed = 1;
-
-    printf("\n");
+    */
     
     if (failed) {
         perror("set cap failed");
@@ -920,18 +951,83 @@ modify_cap(capability, setting)
 }
 
 static int
-modify_caps(capabilities, count, setting)
+modify_caps(capabilities, flag, count, setting)
   int *capabilities;
+  cap_flag_t flag;
   int count;
-  int setting;
+  cap_flag_value_t setting;
 {
   for (int i = 0; i < count; i++) {
-    if (modify_cap(capabilities[i], setting)) {
+    if (modify_cap(capabilities[i], flag, setting)) {
       return -1;
     }
   }
   
   return 0;
+}
+
+
+static int
+drop_bounding_cap(capability)
+  int capability;
+{
+    if (prctl(PR_CAPBSET_DROP, capability, 0, 0, 0)) {
+        perror("cannot drop bounding cap");
+        return -1;
+    }
+    
+    char *cap_name = cap_to_name(capability);
+    printf("%-15s", cap_name);
+    
+    bool in_bounding = prctl(PR_CAPBSET_READ, capability, 0, 0, 0);
+    printf(" Bounding_Set %-4s\n", in_bounding ? "OK" : "NOK");
+    return 0;
+}
+
+static int
+drop_bounding_caps(capabilities, count)
+  int *capabilities;
+  int count;
+{
+  int capability;
+  
+  for (int i = 0; i < count; i++) {
+    capability = capabilities[i];
+    if (drop_bounding_cap(capability)) {
+      return 1;
+    }
+  }
+  
+  return 0;
+}
+
+static int
+clear_effective_and_permitted_caps_except_setpcap()
+{
+    cap_t caps = cap_get_proc();
+    if (caps == NULL) {
+        perror("cannot get cap");
+        return -1;
+    }
+    
+    cap_value_t capList[1];
+    capList[0] = CAP_SETPCAP;
+    
+    if (
+        cap_set_flag(caps, CAP_EFFECTIVE, 1, capList, CAP_SET) ||
+        cap_set_flag(caps, CAP_PERMITTED, 1, capList, CAP_SET)
+    ) {
+        cap_free(caps);
+        perror("cannot set cap");
+        return -1;
+    }
+    
+    if (cap_free(caps) == -1) {
+        perror("cannot free cap");
+        return -1;
+    }
+    
+    return 0;
 }
 
 
@@ -971,15 +1067,16 @@ run_command (cmd, resp)
       }
       
       if (
-          // modify_cap (CAP_SYS_ADMIN, CAP_CLEAR) ||
-          // modify_cap (CAP_CHOWN, CAP_CLEAR) ||
-          // modify_cap (CAP_SETPCAP, CAP_CLEAR)
-          // modify_caps((int[]){CAP_SYS_ADMIN, CAP_CHOWN, CAP_SETPCAP}, 3, CAP_CLEAR)
-          modify_caps(cap_drops, cap_drops_length, CAP_CLEAR)
+        modify_caps(cap_drops, CAP_INHERITABLE, cap_drops_length, CAP_CLEAR) ||
+        modify_caps(cap_drops, CAP_EFFECTIVE, cap_drops_length, CAP_CLEAR) ||
+        modify_caps(cap_drops, CAP_PERMITTED , cap_drops_length, CAP_CLEAR) ||
+        drop_bounding_caps(cap_drops, cap_drops_length)
       ) {
-          perror("cannot modify cap");
-          _exit (EXIT_CANNOT_INVOKE);
+        perror("cannot modify cap");
+        _exit (EXIT_CANNOT_INVOKE);
       }
+      
+      prctl(PR_SET_KEEPCAPS, 1, 0, 0, 0);
       
       if (set_user) {
         if (
@@ -992,6 +1089,58 @@ run_command (cmd, resp)
         }
       }
       
+      prctl(PR_SET_KEEPCAPS, 0, 0, 0, 0);
+      modify_cap(CAP_SETPCAP, CAP_EFFECTIVE, CAP_SET);
+      
+      if (cap_drop_setuid) {
+        if (
+          modify_cap(CAP_SETUID, CAP_INHERITABLE, CAP_CLEAR) ||
+          modify_cap(CAP_SETUID, CAP_EFFECTIVE, CAP_CLEAR) ||
+          modify_cap(CAP_SETUID, CAP_PERMITTED, CAP_CLEAR) ||
+          drop_bounding_cap(CAP_SETUID)
+        ) {
+          perror("cannot modify cap");
+          _exit (EXIT_CANNOT_INVOKE);
+        }
+      }
+      
+      if (cap_drop_setgid) {
+        if (
+          modify_cap(CAP_SETGID, CAP_INHERITABLE, CAP_CLEAR) ||
+          modify_cap(CAP_SETGID, CAP_EFFECTIVE, CAP_CLEAR) ||
+          modify_cap(CAP_SETGID, CAP_PERMITTED, CAP_CLEAR) ||
+          drop_bounding_cap(CAP_SETGID)
+        ) {
+          perror("cannot modify cap");
+          _exit (EXIT_CANNOT_INVOKE);
+        }
+      }
+      
+      if (set_user && set_uid != 0) {
+        clear_effective_and_permitted_caps_except_setpcap();
+      }
+      
+      if (cap_drop_setpcap) {
+        if (
+          // modify_cap(CAP_SETPCAP, CAP_INHERITABLE, CAP_CLEAR) ||
+          // modify_cap(CAP_SETPCAP, CAP_EFFECTIVE, CAP_CLEAR) ||
+          // modify_cap(CAP_SETPCAP, CAP_PERMITTED, CAP_CLEAR) ||
+          drop_bounding_cap(CAP_SETPCAP)
+        ) {
+          perror("cannot modify cap");
+          _exit (EXIT_CANNOT_INVOKE);
+        }
+      } else if (set_user && set_uid != 0) {
+        if (
+          modify_cap(CAP_SETPCAP, CAP_INHERITABLE, CAP_CLEAR) ||
+          modify_cap(CAP_SETPCAP, CAP_EFFECTIVE, CAP_CLEAR) ||
+          modify_cap(CAP_SETPCAP, CAP_PERMITTED, CAP_CLEAR)
+        ) {
+          perror("cannot modify cap");
+          _exit (EXIT_CANNOT_INVOKE);
+        }
+      }
+      
       /* If child.  */
       /* Don't cast execvp arguments; that causes errors on some systems,
 	 versus merely warnings if the cast is left off.  */
@@ -1000,7 +1149,13 @@ run_command (cmd, resp)
       error (0, errno, "cannot run %s", cmd[0]);
       _exit (saved_errno == ENOENT ? EXIT_ENOENT : EXIT_CANNOT_INVOKE);
     }
-
+  
+  if (pidfp != NULL) {
+    fprintf (pidfp, "%lu\n", (unsigned long)pid);
+    fclose(pidfp);
+    pidfp = NULL;
+  }
+  
   /* Have signals kill the child but not self (if possible).  */
   interrupt_signal = signal (SIGINT, SIG_IGN);
   quit_signal = signal (SIGQUIT, SIG_IGN);
