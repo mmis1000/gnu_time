@@ -1093,7 +1093,10 @@ run_command (cmd, resp)
         
         if (cap_drop_setpcap) {
           if (
-            drop_bounding_cap(CAP_SETPCAP)
+            drop_bounding_cap(CAP_SETPCAP) ||
+            modify_cap(CAP_SETPCAP, CAP_INHERITABLE, CAP_CLEAR) ||
+            modify_cap(CAP_SETPCAP, CAP_EFFECTIVE, CAP_CLEAR) ||
+            modify_cap(CAP_SETPCAP, CAP_PERMITTED, CAP_CLEAR)
           ) {
             perror("cannot modify cap");
             _exit (EXIT_CANNOT_INVOKE);
