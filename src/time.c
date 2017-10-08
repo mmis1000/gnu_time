@@ -844,8 +844,6 @@ modify_cap(capability, flag, setting)
     
     /* Retrieve caller's current capabilities */
     
-    // printf("get caps\n");
-    
     caps = cap_get_proc();
     if (caps == NULL) {
         perror("cannot get cap");
@@ -854,8 +852,6 @@ modify_cap(capability, flag, setting)
     /* Change setting of 'capability' in the effective set of 'caps'. The
     third argument, 1, is the number of items in the array 'capList'. */
     
-    // printf("set caps\n");
-    
     capList[0] = capability;
     if (cap_set_flag(caps, flag, 1, capList, setting)
     ) {
@@ -863,16 +859,8 @@ modify_cap(capability, flag, setting)
         perror("cannot set cap");
         return -1;
     }
-    /*
-    if (prctl(PR_CAPBSET_DROP, capability, 0, 0, 0)) {
-        perror("cannot drop cap");
-        return -1;
-    }
-    */
     /* Push modified capability sets back to kernel, to change
     caller's capabilities */
-    
-    // printf("set caps proc\n");
     
     if (cap_set_proc(caps) == -1) {
         cap_free(caps);
@@ -882,8 +870,6 @@ modify_cap(capability, flag, setting)
     
     /* Free the structure that was allocated by libcap */
     
-    // printf("free caps\n");
-    
     if (cap_free(caps) == -1) {
         perror("cannot free cap");
         return -1;
@@ -891,47 +877,27 @@ modify_cap(capability, flag, setting)
     
     /* check caller's current capabilities */
     
-    // printf("get caps again\n");
-    
     caps = cap_get_proc();
     if (caps == NULL) {
         perror("cannot get cap");
         return -1;
     }
     
-    // printf("print caps\n");
-    
     cap_flag_value_t cap_flags_value;
     int failed = 0;
-    
+    /*
     char *cap_name = cap_to_name(capability);
     printf("%-15s", cap_name);
     cap_free(cap_name);
-    
+    */
     cap_get_flag(caps, capability, flag, &cap_flags_value);
-    if (flag == CAP_EFFECTIVE)
+    /*if (flag == CAP_EFFECTIVE)
       printf(" EFFECTIVE %-4s\n", (cap_flags_value == CAP_SET) ? "OK" : "NOK");
     if (flag == CAP_PERMITTED)
       printf(" PERMITTED %-4s\n", (cap_flags_value == CAP_SET) ? "OK" : "NOK");
     if (flag == CAP_INHERITABLE)
-      printf(" INHERITABLE %-4s\n", (cap_flags_value == CAP_SET) ? "OK" : "NOK");
+      printf(" INHERITABLE %-4s\n", (cap_flags_value == CAP_SET) ? "OK" : "NOK");*/
     if (cap_flags_value != setting) failed = 1;
-    /*
-    cap_get_flag(caps, capability, CAP_EFFECTIVE, &cap_flags_value);
-    printf(" EFFECTIVE %-4s ", (cap_flags_value == CAP_SET) ? "OK" : "NOK");
-    if (cap_flags_value != setting) failed = 1;
-
-    cap_get_flag(caps, capability, CAP_PERMITTED, &cap_flags_value);
-    printf(" PERMITTED %-4s ", (cap_flags_value == CAP_SET) ? "OK" : "NOK");
-    if (cap_flags_value != setting) failed = 1;
-
-    cap_get_flag(caps, capability, CAP_INHERITABLE, &cap_flags_value);
-    printf(" INHERITABLE %-4s ", (cap_flags_value == CAP_SET) ? "OK" : "NOK");
-    if (cap_flags_value != setting) failed = 1;
-    
-    int in_bounding = prctl(PR_CAPBSET_READ, capability, 0, 0, 0);
-    printf(" Bounding_Set %-4s ", in_bounding ? "OK" : "NOK");
-    */
     
     if (failed) {
         perror("set cap failed");
@@ -939,8 +905,6 @@ modify_cap(capability, flag, setting)
     }
     
     /* Free the structure that was allocated by libcap */
-    
-    // printf("free caps again\n");
     
     if (cap_free(caps) == -1) {
         perror("cannot free cap");
@@ -975,12 +939,12 @@ drop_bounding_cap(capability)
         perror("cannot drop bounding cap");
         return -1;
     }
-    
+    /*
     char *cap_name = cap_to_name(capability);
     printf("%-15s", cap_name);
     
     bool in_bounding = prctl(PR_CAPBSET_READ, capability, 0, 0, 0);
-    printf(" Bounding_Set %-4s\n", in_bounding ? "OK" : "NOK");
+    printf(" Bounding_Set %-4s\n", in_bounding ? "OK" : "NOK");*/
     return 0;
 }
 
