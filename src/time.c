@@ -203,6 +203,7 @@ static const char *output_format;
 static bool quiet;
 
 /* Cap drops: select caps to drop from spawned process */
+static bool do_drop_cap = false;
 static int *cap_drops = NULL;
 static int cap_drops_length = 0;
 static bool cap_drop_setpcap = false;
@@ -718,6 +719,7 @@ getargs (argc, argv)
 	  verbose = true;
 	  break;
 	case 'c':
+	  do_drop_cap = true;
 	  newstr = strdup(optarg);
 	  sepstr = newstr;
 	  
@@ -1030,17 +1032,19 @@ run_command (cmd, resp)
         }
       }
       
-      if (
-        modify_caps(cap_drops, CAP_INHERITABLE, cap_drops_length, CAP_CLEAR) ||
-        modify_caps(cap_drops, CAP_EFFECTIVE, cap_drops_length, CAP_CLEAR) ||
-        modify_caps(cap_drops, CAP_PERMITTED , cap_drops_length, CAP_CLEAR) ||
-        drop_bounding_caps(cap_drops, cap_drops_length)
-      ) {
-        perror("cannot modify cap");
-        _exit (EXIT_CANNOT_INVOKE);
+      if (do_drop_cap) {
+        if (
+          modify_caps(cap_drops, CAP_INHERITABLE, cap_drops_length, CAP_CLEAR) ||
+          modify_caps(cap_drops, CAP_EFFECTIVE, cap_drops_length, CAP_CLEAR) ||
+          modify_caps(cap_drops, CAP_PERMITTED , cap_drops_length, CAP_CLEAR) ||
+          drop_bounding_caps(cap_drops, cap_drops_length)
+        ) {
+          perror("cannot modify cap");
+          _exit (EXIT_CANNOT_INVOKE);
+        }
+        
+        prctl(PR_SET_KEEPCAPS, 1, 0, 0, 0);
       }
-      
-      prctl(PR_SET_KEEPCAPS, 1, 0, 0, 0);
       
       if (set_user) {
         if (
@@ -1053,58 +1057,56 @@ run_command (cmd, resp)
         }
       }
       
-      prctl(PR_SET_KEEPCAPS, 0, 0, 0, 0);
-      modify_cap(CAP_SETPCAP, CAP_EFFECTIVE, CAP_SET);
-      
-      if (cap_drop_setuid) {
-        if (
-          modify_cap(CAP_SETUID, CAP_INHERITABLE, CAP_CLEAR) ||
-          modify_cap(CAP_SETUID, CAP_EFFECTIVE, CAP_CLEAR) ||
-          modify_cap(CAP_SETUID, CAP_PERMITTED, CAP_CLEAR) ||
-          drop_bounding_cap(CAP_SETUID)
-        ) {
-          perror("cannot modify cap");
-          _exit (EXIT_CANNOT_INVOKE);
+      if (do_drop_cap) {
+        prctl(PR_SET_KEEPCAPS, 0, 0, 0, 0);
+        modify_cap(CAP_SETPCAP, CAP_EFFECTIVE, CAP_SET);
+        
+        if (cap_drop_setuid) {
+          if (
+            modify_cap(CAP_SETUID, CAP_INHERITABLE, CAP_CLEAR) ||
+            modify_cap(CAP_SETUID, CAP_EFFECTIVE, CAP_CLEAR) ||
+            modify_cap(CAP_SETUID, CAP_PERMITTED, CAP_CLEAR) ||
+            drop_bounding_cap(CAP_SETUID)
+          ) {
+            perror("cannot modify cap");
+            _exit (EXIT_CANNOT_INVOKE);
+          }
+        }
+        
+        if (cap_drop_setgid) {
+          if (
+            modify_cap(CAP_SETGID, CAP_INHERITABLE, CAP_CLEAR) ||
+            modify_cap(CAP_SETGID, CAP_EFFECTIVE, CAP_CLEAR) ||
+            modify_cap(CAP_SETGID, CAP_PERMITTED, CAP_CLEAR) ||
+            drop_bounding_cap(CAP_SETGID)
+          ) {
+            perror("cannot modify cap");
+            _exit (EXIT_CANNOT_INVOKE);
+          }
+        }
+        
+        if (set_user && set_uid != 0) {
+          clear_effective_and_permitted_caps_except_setpcap();
+        }
+        
+        if (cap_drop_setpcap) {
+          if (
+            drop_bounding_cap(CAP_SETPCAP)
+          ) {
+            perror("cannot modify cap");
+            _exit (EXIT_CANNOT_INVOKE);
+          }
+        } else if (set_user && set_uid != 0) {
+          if (
+            modify_cap(CAP_SETPCAP, CAP_INHERITABLE, CAP_CLEAR) ||
+            modify_cap(CAP_SETPCAP, CAP_EFFECTIVE, CAP_CLEAR) ||
+            modify_cap(CAP_SETPCAP, CAP_PERMITTED, CAP_CLEAR)
+          ) {
+            perror("cannot modify cap");
+            _exit (EXIT_CANNOT_INVOKE);
+          }
         }
       }
-      
-      if (cap_drop_setgid) {
-        if (
-          modify_cap(CAP_SETGID, CAP_INHERITABLE, CAP_CLEAR) ||
-          modify_cap(CAP_SETGID, CAP_EFFECTIVE, CAP_CLEAR) ||
-          modify_cap(CAP_SETGID, CAP_PERMITTED, CAP_CLEAR) ||
-          drop_bounding_cap(CAP_SETGID)
-        ) {
-          perror("cannot modify cap");
-          _exit (EXIT_CANNOT_INVOKE);
-        }
-      }
-      
-      if (set_user && set_uid != 0) {
-        clear_effective_and_permitted_caps_except_setpcap();
-      }
-      
-      if (cap_drop_setpcap) {
-        if (
-          // modify_cap(CAP_SETPCAP, CAP_INHERITABLE, CAP_CLEAR) ||
-          // modify_cap(CAP_SETPCAP, CAP_EFFECTIVE, CAP_CLEAR) ||
-          // modify_cap(CAP_SETPCAP, CAP_PERMITTED, CAP_CLEAR) ||
-          drop_bounding_cap(CAP_SETPCAP)
-        ) {
-          perror("cannot modify cap");
-          _exit (EXIT_CANNOT_INVOKE);
-        }
-      } else if (set_user && set_uid != 0) {
-        if (
-          modify_cap(CAP_SETPCAP, CAP_INHERITABLE, CAP_CLEAR) ||
-          modify_cap(CAP_SETPCAP, CAP_EFFECTIVE, CAP_CLEAR) ||
-          modify_cap(CAP_SETPCAP, CAP_PERMITTED, CAP_CLEAR)
-        ) {
-          perror("cannot modify cap");
-          _exit (EXIT_CANNOT_INVOKE);
-        }
-      }
-      
       /* If child.  */
       /* Don't cast execvp arguments; that causes errors on some systems,
 	 versus merely warnings if the cast is left off.  */
