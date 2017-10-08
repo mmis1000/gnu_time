@@ -284,7 +284,9 @@ Usage: %s [-apvV] [-f format] [-o file] [--append] [--verbose]\n\
   fputs (_("\
   -n, --pid-namespace       enable pid namesapce\n"), stdout);
   fputs (_("\
-  -u, --user=USER_NAME      execute with specific user's uid and pid\n"), stdout);
+  -u, --user=USER_NAME      execute with specific user's uid and gid\n"), stdout);
+  fputs (_("\
+  -i, --pid-file=FILE       print pid to pid file\n"), stdout);
   fputs (_("\
   -p, --portability         print POSIX standard 1003.2 conformant string:\n\
                               real %%e\n\
