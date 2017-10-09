@@ -996,6 +996,12 @@ clear_effective_and_permitted_caps_except_setpcap()
         return -1;
     }
     
+    if (cap_set_proc(caps) == -1) {
+        cap_free(caps);
+        perror("cannot set cap to process");
+        return -1;
+    }
+    
     if (cap_free(caps) == -1) {
         perror("cannot free cap");
         return -1;
