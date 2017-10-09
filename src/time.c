@@ -978,7 +978,7 @@ drop_bounding_caps(capabilities, count)
 static int
 clear_effective_and_permitted_caps_except_setpcap()
 {
-    cap_t caps = cap_get_proc();
+    cap_t caps = cap_init();
     if (caps == NULL) {
         perror("cannot get cap");
         return -1;
