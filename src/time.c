@@ -908,6 +908,12 @@ modify_cap(capability, flag, setting)
         return -1;
     }
     
+    if (cap_set_proc(caps) == -1) {
+        cap_free(caps);
+        perror("cannot set cap to process");
+        return -1;
+    }
+    
     /* Free the structure that was allocated by libcap */
     
     if (cap_free(caps) == -1) {
